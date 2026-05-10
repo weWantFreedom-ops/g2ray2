@@ -1,0 +1,87 @@
+name: G2Ray Proxy Server
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 */6 * * *'
+
+jobs:
+  run-proxy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Install Xray
+        run: |
+          wget -q -O xray.zip https://github.com/XTLS/Xray-core/releases/download/v26.3.27/Xray-linux-64.zip
+          unzip -q xray.zip xray
+          chmod +x xray
+          sudo mv xray /usr/local/bin/xray
+
+      - name: Write Xray config
+        run: |
+          cat > /tmp/config.json <<'EOF'
+          {
+            "log": { "loglevel": "warning" },
+            "inbounds": [{
+              "port": 8080,
+              "protocol": "vless",
+              "settings": {
+                "clients": [{ "id": "550e8400-e29b-41d4-a716-446655440000" }],
+                "decryption": "none"
+              },
+              "streamSettings": {
+                "network": "ws",
+                "wsSettings": { "path": "/" }
+              }
+            }],
+            "outbounds": [{ "protocol": "freedom" }]
+          }
+          EOF
+
+      - name: Start Xray
+        run: xray -c /tmp/config.json &
+
+      - name: Install cloudflared
+        run: |
+          wget -q -O cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared
+
+      - name: Start tunnel and show VLESS link
+        run: |
+          ./cloudflared tunnel --url http://localhost:8080 --no-autoupdate 2>&1 | tee /tmp/cf.log &
+          sleep 12
+
+          TUNNEL_URL=$(grep -oP 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' /tmp/cf.log | head -1)
+          HOST=$(echo "$TUNNEL_URL" | sed 's|https://||')
+          UUID="550e8400-e29b-41d4-a716-446655440000"
+          VLESS_LINK="vless://${UUID}@${HOST}:443?encryption=none&security=tls&sni=${HOST}&type=ws&path=%2F#G2Ray-Actions"
+
+          echo ""
+          echo "╔════════════════════════════════════════════════╗"
+          echo "║         🚀 G2RAY - VLESS LINK READY 🚀        ║"
+          echo "╚════════════════════════════════════════════════╝"
+          echo ""
+          echo "🔗 $VLESS_LINK"
+          echo ""
+
+          echo "## 🔗 VLESS Link" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "$VLESS_LINK" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Host:** \`$HOST\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> این لینک تا ~6 ساعت دیگر معتبر است" >> $GITHUB_STEP_SUMMARY
+
+          # ارسال به تلگرام (اگر secret تنظیم شده باشه)
+          if [ -n "${{ secrets.TELEGRAM_BOT_TOKEN }}" ] && [ -n "${{ secrets.TELEGRAM_CHAT_ID }}" ]; then
+            MESSAGE="🚀 G2Ray آنلاین شد%0A%0A🔗 لینک VLESS:%0A${VLESS_LINK}%0A%0A⏰ تا 6 ساعت دیگر معتبر است"
+            curl -s "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+              -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+              -d "text=${MESSAGE}" > /dev/null
+          fi
+
+      - name: Keep alive (~5h 40m)
+        run: sleep 20400
